@@ -2,7 +2,7 @@ from django.db import models
 from django.contrib.auth.models import User
 
 class Summary(models.Model):
-    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='summaries')
+    user = models.ForeignKey(User, on_delete=models.CASCADE)
     original_text = models.TextField()
     summary_text = models.TextField()
     source_url = models.URLField(blank=True, null=True)
@@ -12,6 +12,12 @@ class Summary(models.Model):
         default='medium'
     )
     created_at = models.DateTimeField(auto_now_add=True)
+    is_complete = models.BooleanField(default=True)
 
     def __str__(self):
-        return f"Summary by {self.user.username} on {self.created_at.strftime('%Y-%m-%d %H:%M')}"
+        return f"Summary ({self.summary_type}) by {self.user.username}"
+
+    class Meta:
+        indexes = [
+            models.Index(fields=['user', 'created_at']),
+        ]

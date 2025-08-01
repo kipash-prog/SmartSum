@@ -1,7 +1,7 @@
 # views.py
 import logging
-import socket
 from urllib.parse import urlparse
+import socket
 from urllib3.util.retry import Retry
 
 import google.generativeai as genai
@@ -21,74 +21,62 @@ from .models import Summary
 
 logger = logging.getLogger(__name__)
 
-# Initialize Gemini AI once
+# Initialize Gemini AI with enhanced configuration
 try:
     genai.configure(api_key=settings.GEMINI_API_KEY)
-    gemini_model = genai.GenerativeModel('gemini-pro')
+    generation_config = {
+        "temperature": 0.3,
+        "top_p": 0.95,
+        "top_k": 40,
+        "max_output_tokens": 2048,
+    }
+    safety_settings = [
+        {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+        {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+        {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+        {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+    ]
+    gemini_model = genai.GenerativeModel(
+        'gemini-2.5-flash',
+        generation_config=generation_config,
+        safety_settings=safety_settings
+    )
 except Exception as e:
     logger.error(f"Failed to initialize Gemini: {str(e)}")
     gemini_model = None
 
 
+
+
 class RegisterView(APIView):
     permission_classes = [AllowAny]
-    
+
     def post(self, request):
-        try:
-            username = request.data.get('username', '').strip()
-            password = request.data.get('password', '').strip()
-            email = request.data.get('email', '').strip()
+        username = request.data.get("username")
+        password = request.data.get("password")
+        email = request.data.get("email")
 
-            if not username or not password:
-                return Response(
-                    {'error': 'Username and password are required.'}, 
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-
-            if len(username) < 4:
-                return Response(
-                    {'error': 'Username must be at least 4 characters.'},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-
-            if len(password) < 8:
-                return Response(
-                    {'error': 'Password must be at least 8 characters.'},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-
-            if User.objects.filter(username=username).exists():
-                return Response(
-                    {'error': 'Username already exists.'}, 
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-
-            if email and User.objects.filter(email=email).exists():
-                return Response(
-                    {'error': 'Email already in use.'}, 
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-
-            user = User.objects.create(
-                username=username,
-                password=make_password(password),
-                email=email if email else ''
-            )
-            
+        if not username or not password or not email:
             return Response(
-                {
-                    'message': 'User registered successfully.',
-                    'username': user.username
-                }, 
-                status=status.HTTP_201_CREATED
+                {"error": "Username, password, and email are required"},
+                status=status.HTTP_400_BAD_REQUEST
             )
 
-        except Exception as e:
-            logger.error(f"Registration error: {str(e)}", exc_info=True)
+        if User.objects.filter(username=username).exists():
             return Response(
-                {'error': 'Internal server error'}, 
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                {"error": "Username already exists"},
+                status=status.HTTP_400_BAD_REQUEST
             )
+
+        user = User.objects.create(
+            username=username,
+            password=make_password(password),
+            email=email
+        )
+        user.save()
+
+        return Response({"message": "User registered successfully"}, status=status.HTTP_201_CREATED)
+
 
 
 class SummarizeView(APIView):
@@ -101,6 +89,14 @@ class SummarizeView(APIView):
                 f"Invalid summary_type. Must be one of: {', '.join(valid_types)}"
             )
 
+    def validate_content(self, text):
+        """Validate content before sending to Gemini"""
+        if not text or len(text.strip()) < 50:
+            raise ValueError("Content too short (minimum 50 characters)")
+        if len(text) > 15000:
+            raise ValueError("Content too long (maximum 15,000 characters)")
+        return text.strip()
+
     @retry.Retry(
         initial=1.0,
         maximum=10.0,
@@ -112,55 +108,94 @@ class SummarizeView(APIView):
         if not gemini_model:
             raise ConnectionError("Gemini AI service not configured")
             
-        config = {
-            "max_output_tokens": {
-                "short": 100,
-                "medium": 200,
-                "long": 400
-            }.get(summary_type, 200),
-            "temperature": 0.3
-        }
-        return gemini_model.generate_content(
-            f"Summarize this in {summary_type} length: {text}",
-            generation_config=config
-        )
+        # Enhanced prompt engineering
+        prompt = f"""
+        Please generate a {summary_type} summary of the following text.
+        The summary should be:
+        - Comprehensive but concise
+        - Preserve key facts and main ideas
+        - In complete sentences
+        - In the same language as the original text
+        
+        Original text:
+        {text}
+        
+        Summary:
+        """
+        
+        try:
+            response = gemini_model.generate_content(prompt)
+            
+            # Validate response
+            if not response.text or len(response.text.strip()) < 10:
+                raise ValueError("Empty or invalid summary generated")
+                
+            return response.text.strip()
+        except Exception as e:
+            logger.error(f"Generation error: {str(e)}")
+            raise
 
     def post(self, request):
         try:
             text = request.data.get("text", "").strip()
             summary_type = request.data.get("summary_type", "medium").strip().lower()
             
-            if not text:
-                return Response(
-                    {"error": "No text provided."}, 
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-
+            # Validate input
             try:
                 self.validate_summary_type(summary_type)
+                text = self.validate_content(text)
             except ValueError as e:
                 return Response(
-                    {"error": str(e)}, 
+                    {"error": str(e), "code": "invalid_input"}, 
                     status=status.HTTP_400_BAD_REQUEST
                 )
 
+            # Generate summary with enhanced error handling
             try:
-                response = self.generate_summary(text, summary_type)
-                summary = response.text
+                summary = self.generate_summary(text, summary_type)
             except genai.types.StopCandidateException as e:
-                logger.error(f"Gemini content filter triggered: {str(e)}")
+                logger.error(f"Content filter triggered: {str(e)}")
                 return Response(
-                    {"error": "Content violation detected in generation"},
+                    {
+                        "error": "Content violation detected in generation",
+                        "code": "content_violation",
+                        "solutions": [
+                            "Try different content",
+                            "Reformulate your text",
+                            "Contact support if this persists"
+                        ]
+                    },
                     status=status.HTTP_400_BAD_REQUEST
                 )
-            except Exception as e:
-                logger.error(f"Gemini API error: {str(e)}")
+            except ValueError as e:
+                logger.error(f"Empty summary generated: {str(e)}")
                 return Response(
-                    {"error": "AI service unavailable"},
+                    {
+                        "error": "Failed to generate meaningful summary",
+                        "code": "empty_summary",
+                        "solutions": [
+                            "Try different content",
+                            "Use a different summary length",
+                            "Break content into smaller sections"
+                        ]
+                    },
+                    status=status.HTTP_422_UNPROCESSABLE_ENTITY
+                )
+            except Exception as e:
+                logger.error(f"Generation failed: {str(e)}")
+                return Response(
+                    {
+                        "error": "AI service unavailable",
+                        "code": "service_unavailable",
+                        "solutions": [
+                            "Try again later",
+                            "Contact support if this persists"
+                        ]
+                    },
                     status=status.HTTP_503_SERVICE_UNAVAILABLE
                 )
 
-            # Save to database
+            # Save to database with error handling
             try:
                 Summary.objects.create(
                     user=request.user,
@@ -169,18 +204,27 @@ class SummarizeView(APIView):
                     summary_type=summary_type,
                 )
             except Exception as e:
-                logger.error(f"Failed to save summary: {str(e)}")
+                logger.error(f"Database save failed: {str(e)}")
+                # Continue even if save fails
 
             return Response({
                 "summary": summary,
                 "characters": len(summary),
-                "summary_type": summary_type
+                "summary_type": summary_type,
+                "success": True
             })
 
         except Exception as e:
-            logger.error(f"Unexpected error in summarization: {str(e)}", exc_info=True)
+            logger.error(f"Unexpected error: {str(e)}", exc_info=True)
             return Response(
-                {"error": "Internal server error"}, 
+                {
+                    "error": "Internal server error",
+                    "code": "server_error",
+                    "solutions": [
+                        "Try again later",
+                        "Contact support with error details"
+                    ]
+                }, 
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
@@ -190,15 +234,20 @@ class FetchUrlContentView(APIView):
     
     def __init__(self):
         super().__init__()
-        # Configure requests session with retry
+        # Enhanced session configuration
         self.session = requests.Session()
         retries = Retry(
             total=3,
             backoff_factor=1,
-            status_forcelist=[500, 502, 503, 504]
+            status_forcelist=[400, 403, 408, 429, 500, 502, 503, 504]
         )
-        self.session.mount('http://', HTTPAdapter(max_retries=retries))
-        self.session.mount('https://', HTTPAdapter(max_retries=retries))
+        adapter = HTTPAdapter(
+            max_retries=retries,
+            pool_connections=10,
+            pool_maxsize=10
+        )
+        self.session.mount('http://', adapter)
+        self.session.mount('https://', adapter)
 
     def validate_url(self, url):
         try:
@@ -208,11 +257,49 @@ class FetchUrlContentView(APIView):
             if result.scheme not in ['http', 'https']:
                 raise ValueError("Only http/https URLs are allowed")
             
+            # Enhanced domain validation
+            domain = result.netloc.split(':')[0]
+            if not all(part.isalnum() or part in ('-', '.') for part in domain.split('.')):
+                raise ValueError("Invalid domain name")
+            
             # Verify DNS resolution
-            socket.getaddrinfo(result.netloc, None)
+            socket.getaddrinfo(domain, None)
             return True
         except (ValueError, socket.gaierror) as e:
             raise ValueError(f"URL validation failed: {str(e)}")
+
+    def extract_main_content(self, soup):
+        """Enhanced content extraction with multiple fallbacks"""
+        # Try common article containers first
+        selectors = [
+            'article', 
+            'main', 
+            'div.article', 
+            'div.content', 
+            'div.post', 
+            'div.story',
+            'section.main-content'
+        ]
+        
+        for selector in selectors:
+            element = soup.select_one(selector)
+            if element:
+                return element.get_text(' ', strip=True)
+        
+        # Fallback to body text extraction
+        text_parts = []
+        for tag in ['p', 'div', 'section']:
+            elements = soup.find_all(tag)
+            for el in elements:
+                text = el.get_text(' ', strip=True)
+                if len(text.split()) > 10:  # Only include meaningful paragraphs
+                    text_parts.append(text)
+        
+        if text_parts:
+            return ' '.join(text_parts)
+        
+        # Final fallback to all text
+        return soup.get_text(' ', strip=True)
 
     def post(self, request):
         try:
@@ -220,7 +307,7 @@ class FetchUrlContentView(APIView):
             
             if not url:
                 return Response(
-                    {"error": "URL is required"}, 
+                    {"error": "URL is required", "code": "missing_url"},
                     status=status.HTTP_400_BAD_REQUEST
                 )
 
@@ -228,7 +315,7 @@ class FetchUrlContentView(APIView):
                 self.validate_url(url)
             except ValueError as e:
                 return Response(
-                    {"error": str(e)}, 
+                    {"error": str(e), "code": "invalid_url"},
                     status=status.HTTP_400_BAD_REQUEST
                 )
 
@@ -242,91 +329,131 @@ class FetchUrlContentView(APIView):
                 response = self.session.get(
                     url,
                     headers=headers,
-                    timeout=(3.05, 10),  # Connect timeout, read timeout
+                    timeout=(3.05, 10),
                     allow_redirects=True,
-                    verify=True  # Enable SSL verification
+                    verify=True
                 )
                 response.raise_for_status()
                 
-                # Check content type
                 content_type = response.headers.get('Content-Type', '')
                 if 'text/html' not in content_type:
                     return Response(
-                        {"error": "URL does not return HTML content"},
+                        {
+                            "error": "URL does not return HTML content",
+                            "code": "non_html_content"
+                        },
                         status=status.HTTP_400_BAD_REQUEST
                     )
                     
             except requests.exceptions.SSLError:
                 return Response(
-                    {"error": "SSL verification failed"},
+                    {
+                        "error": "SSL verification failed",
+                        "code": "ssl_error",
+                        "solutions": ["Try a different URL"]
+                    },
                     status=status.HTTP_400_BAD_REQUEST
                 )
             except requests.exceptions.Timeout:
                 return Response(
-                    {"error": "Website took too long to respond"},
+                    {
+                        "error": "Website took too long to respond",
+                        "code": "timeout",
+                        "solutions": ["Try again later", "Check the URL"]
+                    },
                     status=status.HTTP_408_REQUEST_TIMEOUT
                 )
             except requests.exceptions.TooManyRedirects:
                 return Response(
-                    {"error": "Too many redirects"},
+                    {
+                        "error": "Too many redirects",
+                        "code": "redirect_loop",
+                        "solutions": ["Try a different URL"]
+                    },
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            except requests.exceptions.HTTPError as e:
+                status_code = e.response.status_code
+                if status_code == 403:
+                    return Response(
+                        {
+                            "error": "Access forbidden (403)",
+                            "code": "forbidden",
+                            "solutions": [
+                                "Try a different URL",
+                                "The website may block automated requests"
+                            ]
+                        },
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+                return Response(
+                    {
+                        "error": f"HTTP error {status_code}",
+                        "code": f"http_{status_code}",
+                        "solutions": ["Try a different URL"]
+                    },
                     status=status.HTTP_400_BAD_REQUEST
                 )
             except requests.exceptions.RequestException as e:
                 logger.error(f"URL fetch failed: {str(e)}")
                 return Response(
-                    {"error": "Could not fetch URL content"},
+                    {
+                        "error": "Could not fetch URL content",
+                        "code": "fetch_failed",
+                        "solutions": ["Try a different URL", "Check your connection"]
+                    },
                     status=status.HTTP_400_BAD_REQUEST
                 )
 
-            # Parse content with improved extraction
             try:
                 soup = BeautifulSoup(response.text, 'html.parser')
                 
-                # Remove unwanted elements
+                # Clean up the document
                 for element in soup(['script', 'style', 'nav', 'footer', 
                                    'iframe', 'img', 'button', 'form',
-                                   'header', 'aside', 'svg', 'link']):
+                                   'header', 'aside', 'svg', 'link',
+                                   'meta', 'noscript']):
                     element.decompose()
-                    
-                # Improved content extraction
-                text_parts = []
-                for tag in ['article', 'main', 'div.content', 'section']:
-                    elements = soup.find_all(tag)
-                    for el in elements:
-                        text_parts.append(el.get_text(' ', strip=True))
                 
-                # Fallback to paragraph text if no specific sections found
-                if not text_parts:
-                    paragraphs = soup.find_all('p')
-                    text_parts = [p.get_text(' ', strip=True) for p in paragraphs]
+                content = self.extract_main_content(soup)
                 
-                # Final fallback
-                if not text_parts:
-                    text_parts = list(soup.stripped_strings)
-                    
-                text = ' '.join(text_parts)
-                
-                if not text:
+                if not content or len(content.strip()) < 50:
                     return Response(
-                        {"error": "No readable content found on page"}, 
+                        {
+                            "error": "No readable content found on page",
+                            "code": "no_content",
+                            "solutions": [
+                                "Try a different URL",
+                                "The page may require JavaScript"
+                            ]
+                        }, 
                         status=status.HTTP_400_BAD_REQUEST
                     )
                 
                 return Response({
-                    "content": text[:15000],  # Limit content size
-                    "source_url": url
+                    "content": content[:15000],  # Limit content size
+                    "source_url": url,
+                    "success": True
                 })
                 
             except Exception as e:
                 logger.error(f"Content parsing failed: {str(e)}")
                 return Response(
-                    {"error": "Failed to parse page content"},
+                    {
+                        "error": "Failed to parse page content",
+                        "code": "parse_error",
+                        "solutions": ["Try a different URL"]
+                    },
                     status=status.HTTP_500_INTERNAL_SERVER_ERROR
                 )
 
         except Exception as e:
             logger.error(f"Unexpected error in URL fetch: {str(e)}", exc_info=True)
             return Response(
-                {"error": "Internal server error"}, 
+                {
+                    "error": "Internal server error",
+                    "code": "server_error",
+                    "solutions": ["Try again later", "Contact support"]
+                }, 
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
