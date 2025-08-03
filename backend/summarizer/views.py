@@ -110,17 +110,36 @@ class SummarizeView(APIView):
             
         # Enhanced prompt engineering
         prompt = f"""
-        Please generate a {summary_type} summary of the following text.
-        The summary should be:
-        - Comprehensive but concise
-        - Preserve key facts and main ideas
-        - In complete sentences
-        - In the same language as the original text
-        
-        Original text:
-        {text}
-        
-        Summary:
+        Please generate a {summary_type} summary of the provided content adhering to the following professional standards:
+
+1. Content Requirements:
+- Maintain all critical information and key concepts
+- Preserve original meaning and context
+- Retain technical terms and proper nouns
+- Keep numerical data and statistics
+
+2. Quality Standards:
+- Use clear, professional language
+- Ensure grammatical accuracy
+- Maintain logical flow and coherence
+- Be factually precise
+
+3. Format Specifications:
+- Length: {summary_type} (specify word count or sentence count)
+- Style: Professional/academic tone
+- Structure: Complete, well-formed sentences
+- Language: Match original text language
+
+4. Processing Instructions:
+- Exclude examples unless critical to understanding
+- Remove redundant information
+- Condense without oversimplifying
+- Prioritize information by importance
+
+Original Content:
+{text}
+
+Please provide the summary with these professional considerations in mind.
         """
         
         try:
@@ -189,7 +208,7 @@ class SummarizeView(APIView):
                         "code": "service_unavailable",
                         "solutions": [
                             "Try again later",
-                            "Contact support if this persists"
+                            
                         ]
                     },
                     status=status.HTTP_503_SERVICE_UNAVAILABLE
@@ -222,7 +241,7 @@ class SummarizeView(APIView):
                     "code": "server_error",
                     "solutions": [
                         "Try again later",
-                        "Contact support with error details"
+                        
                     ]
                 }, 
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR

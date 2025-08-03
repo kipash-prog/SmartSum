@@ -13,6 +13,8 @@ import "./SummarizePage.css";
 const API_BASE_URL = 'http://localhost:8000';
 const MAX_HISTORY_ITEMS = 10;
 
+const sampleText = `The Industrial Revolution was a period of major industrialization that began in the late 1700s and continued through the 1800s. It marked a shift from agrarian societies to industrialized ones, with new manufacturing processes leading to urbanization and significant changes in daily life.`;
+
 const SummarizePage = () => {
   const [form, setForm] = useState({
     input: "",
@@ -80,7 +82,7 @@ const SummarizePage = () => {
   const fetchUrlContent = async (url) => {
     try {
       const token = localStorage.getItem("token");
-      if (!token) throw new Error("Authentication required");
+      if (!token) throw new Error("Please log in to summarize web content");
 
       const response = await axios.post(
         `${API_BASE_URL}/api/fetch-url-content/`,
@@ -90,16 +92,30 @@ const SummarizePage = () => {
             "Content-Type": "application/json",
             Authorization: `Bearer ${token}`
           },
-          timeout: 30000
+          timeout: 15000
         }
       );
 
-      return response.data?.content || "";
+      if (!response.data?.content) {
+        throw new Error("We couldn't extract any text from this webpage");
+      }
+
+      return response.data.content;
     } catch (err) {
-      let errorMsg = "Failed to fetch URL content";
-      if (err.response?.status === 403) errorMsg = "Access denied";
-      else if (err.response?.status === 400) errorMsg = "Invalid URL";
-      else if (err.code === "ECONNABORTED") errorMsg = "Request timed out";
+      let errorMsg = "We couldn't access this webpage";
+      
+      if (err.response?.status === 403) {
+        errorMsg = "You don't have permission to access this content";
+      } else if (err.response?.status === 400) {
+        errorMsg = "Please check if this is a valid webpage address";
+      } else if (err.code === "ECONNABORTED") {
+        errorMsg = "The website took too long to respond";
+      } else if (err.message.includes("Failed to fetch")) {
+        errorMsg = "Please check your internet connection";
+      } else if (err.message.includes("404")) {
+        errorMsg = "This page doesn't exist (404 error)";
+      }
+      
       throw new Error(errorMsg);
     }
   };
@@ -110,12 +126,28 @@ const SummarizePage = () => {
     setUi(prev => ({ ...prev, copied: false }));
 
     if (!form.input.trim()) {
-      setError({ title: "Input Required", message: "Please provide content", type: "validation" });
+      setError({
+        title: "Nothing to summarize",
+        message: "Please enter some text or a webpage address",
+        type: "validation",
+        actions: [
+          { text: "Switch to URL input", handler: toggleInputType },
+          { text: "Try sample text", handler: () => setForm(prev => ({ ...prev, input: sampleText })) }
+        ]
+      });
       return;
     }
 
     if (form.inputType === 'url' && !isValidUrl(form.input)) {
-      setError({ title: "Invalid URL", message: "URL must start with http:// or https://", type: "validation" });
+      setError({
+        title: "This doesn't look like a webpage address",
+        message: "Web addresses should start with http:// or https://",
+        type: "validation",
+        actions: [
+          { text: "Switch to text input", handler: toggleInputType },
+          { text: "Try example URL", handler: () => setForm(prev => ({ ...prev, input: "https://en.wikipedia.org" })) }
+        ]
+      });
       return;
     }
 
@@ -124,22 +156,32 @@ const SummarizePage = () => {
 
     try {
       const token = localStorage.getItem("token");
-      if (!token) return navigate("/login");
+      if (!token) {
+        navigate("/login");
+        return;
+      }
 
       let content = form.input;
       if (form.inputType === 'url') {
         setUi(prev => ({ ...prev, fetchingContent: true }));
         content = await fetchUrlContent(form.input);
+        
+        if (!content.trim()) {
+          throw new Error("This webpage doesn't contain any text we can summarize");
+        }
       }
 
       const response = await axios.post(
         `${API_BASE_URL}/api/summarize/`,
         { text: content, summary_type: form.summaryType },
-        { headers: { Authorization: `Bearer ${token}` } }
+        { 
+          headers: { Authorization: `Bearer ${token}` },
+          timeout: 20000
+        }
       );
 
       const newSummary = response.data?.summary;
-      if (!newSummary) throw new Error("Empty response");
+      if (!newSummary) throw new Error("We couldn't create a summary from this content");
 
       setData(prev => ({
         ...prev,
@@ -161,7 +203,39 @@ const SummarizePage = () => {
       }
 
     } catch (error) {
-      setError({ title: "Summarization Failed", message: error.message, type: "processing" });
+      let errorTitle = "Couldn't create summary";
+      let errorActions = [];
+      
+      if (error.response?.status === 401) {
+        errorTitle = "Session expired";
+        errorActions = [
+          { text: "Go to login", handler: () => navigate("/login") }
+        ];
+      } else if (error.code === "ECONNABORTED" || error.message.includes("timeout")) {
+        errorTitle = "Took too long";
+        errorActions = [
+          { text: "Try again", handler: handleSubmit },
+          { text: "Try shorter content", handler: clearAll }
+        ];
+      } else if (error.message.includes("network")) {
+        errorTitle = "Connection issue";
+        errorActions = [
+          { text: "Check connection", handler: null },
+          { text: "Try again", handler: handleSubmit }
+        ];
+      } else {
+        errorActions = [
+          { text: "Try different content", handler: clearAll },
+          { text: "Contact support", handler: null }
+        ];
+      }
+      
+      setError({
+        title: errorTitle,
+        message: error.message,
+        type: "processing",
+        actions: errorActions
+      });
     } finally {
       setUi(prev => ({ ...prev, loading: false, fetchingContent: false }));
     }
@@ -203,7 +277,12 @@ const SummarizePage = () => {
         setUi(prev => ({ ...prev, copied: true }));
         setTimeout(() => setUi(prev => ({ ...prev, copied: false })), 2000);
       })
-      .catch(() => setError({ title: "Clipboard Error", message: "Failed to copy", type: "system" }));
+      .catch(() => setError({ 
+        title: "Copy failed", 
+        message: "Please try copying manually", 
+        type: "system",
+        actions: []
+      }));
   };
 
   const toggleInputType = () => {
@@ -216,7 +295,12 @@ const SummarizePage = () => {
   };
 
   const isValidUrl = (url) => {
-    try { new URL(url); return true; } catch { return false; }
+    try { 
+      new URL(url); 
+      return true; 
+    } catch { 
+      return false; 
+    }
   };
 
   const truncateText = (text, maxLength) => 
@@ -410,26 +494,37 @@ const SummarizePage = () => {
 
               {error && (
                 <div className={`error-message ${error.type}`}>
-                  <FiAlertCircle className="error-icon" />
+                  <div className="error-icon-container">
+                    <FiAlertCircle className="error-icon" />
+                  </div>
                   <div className="error-content">
                     <h3>{error.title}</h3>
                     <p>{error.message}</p>
-                    <div className="error-suggestions">
-                      <p>Suggested actions:</p>
-                      <ul>
-                        <li>Try different content</li>
-                        <li>Check the format</li>
-                        <li>Contact support</li>
-                      </ul>
+                    <div className="error-actions">
+                      {error.actions?.map((action, index) => (
+                        <button
+                          key={index}
+                          onClick={action.handler ? (e) => {
+                            e.preventDefault();
+                            action.handler(e);
+                          } : null}
+                          className={`error-action-button ${!action.handler ? 'disabled' : ''}`}
+                          disabled={!action.handler}
+                        >
+                          {action.text}
+                        </button>
+                      ))}
+                      <button 
+                        className="error-dismiss"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          setError(null);
+                        }}
+                      >
+                        Dismiss
+                      </button>
                     </div>
                   </div>
-                  <button 
-                    className="error-close"
-                    onClick={() => setError(null)}
-                    aria-label="Dismiss error message"
-                  >
-                    ×
-                  </button>
                 </div>
               )}
 
