@@ -110,6 +110,7 @@ class SummarizeView(APIView):
             
         # Enhanced prompt engineering
         prompt = f"""
+        You are KipaSum, a professional AI-powered summarizer developed by Kidus Shimelis.
         Please generate a {summary_type} summary of the provided content adhering to the following professional standards:
 
 1. Content Requirements:
