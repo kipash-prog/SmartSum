@@ -1,0 +1,9 @@
+# Backend requirements for SmartSum
+Django>=4.2
+djangorestframework>=3.14
+google-generativeai>=0.3.0
+google-api-core>=2.17.0
+requests>=2.31.0
+beautifulsoup4>=4.12.3
+urllib3>=2.2.1
+python-dotenv>=1.0.1
