@@ -1,3 +1,4 @@
+<img width="1243" height="632" alt="image" src="https://github.com/user-attachments/assets/e36e3372-a928-493a-8461-f41a3d7f144a" />
 
 # SmartSum
 
